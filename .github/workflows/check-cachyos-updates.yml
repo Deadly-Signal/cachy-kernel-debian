@@ -1,0 +1,171 @@
+name: Check CachyOS Kernel Updates
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Dispatch a build for every variant even if upstream is unchanged"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: cachyos-update-check
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: CachyOS/linux-cachyos
+  UPSTREAM_BRANCH: master
+  BUILD_WORKFLOW: build-cachyos-kernel.yml
+  BUILD_RUNNER: blacksmith-16vcpu-ubuntu-2404
+  STATE_FILE: cachyos-kernel-state.json
+
+jobs:
+  check:
+    name: Poll upstream and dispatch builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out workflow repository
+        uses: actions/checkout@v4
+
+      - name: Detect upstream updates and dispatch builds
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FORCE_BUILD: ${{ inputs.force_build || false }}
+        run: |
+          set -euo pipefail
+
+          VARIANTS=(
+            "linux-cachyos:cachyos"
+            "linux-cachyos-bore:bore"
+            "linux-cachyos-eevdf:eevdf"
+            "linux-cachyos-lts:cachyos"
+          )
+
+          declare -A STORED
+          if [ -f "${STATE_FILE}" ]; then
+            while IFS='=' read -r k v; do
+              [ -n "${k}" ] && STORED["${k}"]="${v}"
+            done < <(python3 - "${STATE_FILE}" <<'PY'
+          import json, sys
+          state = json.load(open(sys.argv[1]))
+          for k, v in state.items():
+              print(f"{k}={v}")
+          PY
+          )
+          fi
+
+          changed=false
+          fetch_errors=0
+          : > /tmp/cachyos-summary.md
+          : > /tmp/cachyos-new-state
+
+          for entry in "${VARIANTS[@]}"; do
+            variant="${entry%%:*}"
+            scheduler="${entry##*:}"
+            pkgbuild="/tmp/${variant}-PKGBUILD"
+
+            if ! curl -fsSL --retry 3 --retry-delay 5 \
+              "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${UPSTREAM_BRANCH}/${variant}/PKGBUILD" \
+              -o "${pkgbuild}"; then
+              echo "::warning::Could not fetch PKGBUILD for ${variant}"
+              fetch_errors=$((fetch_errors + 1))
+              printf -- "- **%s**: upstream fetch failed\n" "${variant}" >> /tmp/cachyos-summary.md
+              continue
+            fi
+
+            major="$(sed -n 's/^_major=//p' "${pkgbuild}")"
+            minor="$(sed -n 's/^_minor=//p' "${pkgbuild}")"
+            tagrel="$(sed -n 's/^_tagrel=//p' "${pkgbuild}")"
+            version="${major}.${minor}-${tagrel}"
+            stored="${STORED[${variant}]:-}"
+
+            echo "::group::${variant}"
+            echo "upstream: ${version} | stored: ${stored:-none}"
+
+            action="unchanged"
+            needs_build=false
+            [ "${version}" != "${stored}" ] && needs_build=true
+            [ "${FORCE_BUILD}" = "true" ] && needs_build=true
+
+            if [ "${needs_build}" = "true" ]; then
+              if [ "${FORCE_BUILD}" = "true" ] || [ -n "${stored}" ]; then
+                echo "Dispatching build for ${variant} (${version}) on ${BUILD_RUNNER}"
+                gh workflow run "${BUILD_WORKFLOW}" --ref "${DEFAULT_BRANCH}" \
+                  -f runner="${BUILD_RUNNER}" \
+                  -f kernel_variant="${variant}" \
+                  -f cpu_scheduler="${scheduler}" \
+                  -F run_qemu_smoke_test=true \
+                  -F publish_release=true \
+                  -F mark_latest=true
+                action="dispatched"
+              else
+                echo "First run for ${variant}: recording ${version} without dispatching. Re-run with force_build=true to build it now."
+                action="recorded-first-run"
+              fi
+            fi
+
+            printf -- "- **%s**: %s (action: %s, stored: %s)\n" \
+              "${variant}" "${version}" "${action}" "${stored:-none}" >> /tmp/cachyos-summary.md
+
+            if [ "${version}" != "${stored}" ]; then
+              echo "${variant}=${version}" >> /tmp/cachyos-new-state
+              changed=true
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ "${changed}" = "true" ]; then
+            python3 - "${STATE_FILE}" <<'PY'
+          import json, sys
+          path = sys.argv[1]
+          state = {}
+          with open('/tmp/cachyos-new-state') as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line or '=' not in line:
+                      continue
+                  k, v = line.split('=', 1)
+                  state[k] = v
+          with open(path, 'w') as fh:
+              json.dump(state, fh, indent=2, sort_keys=True)
+              fh.write('\n')
+          PY
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          if [ "${fetch_errors}" -gt 0 ]; then
+            echo "::error::${fetch_errors} upstream variant(s) could not be checked"
+            exit 1
+          fi
+
+      - name: Commit updated kernel state
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${STATE_FILE}"
+          git commit -m "ci: record latest CachyOS kernel versions"
+          git push
+
+      - name: Write check summary
+        if: always()
+        run: |
+          {
+            echo "## CachyOS Kernel Update Check"
+            echo ""
+            echo "Polled ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"
+            echo ""
+            cat /tmp/cachyos-summary.md
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -28,11 +28,49 @@ Expected output includes standard `.deb` packages such as:
 
 ## Workflow Trigger
 
-The workflow is manual-only.
+The workflow runs in two ways:
 
-It does not run on pushes, pull requests, tags, or a schedule. A repository
-maintainer must explicitly start it from the GitHub Actions tab with the
-`workflow_dispatch` trigger.
+1. **Automatic**: a scheduled `check-cachyos-updates` workflow polls the official
+   [CachyOS/linux-cachyos](https://github.com/CachyOS/linux-cachyos) packaging
+   repository every 3 hours. When a variant's `pkgver`/`pkgrel` changes, it
+   automatically dispatches the build workflow for that variant and publishes a
+   GitHub Release with the resulting `.deb` packages.
+2. **Manual**: a repository maintainer can still start the build explicitly from
+   the GitHub Actions tab with the `workflow_dispatch` trigger.
+
+See [Automatic Update Tracking](#automatic-update-tracking) below for details.
+
+## Automatic Update Tracking
+
+A companion workflow (`.github/workflows/check-cachyos-updates.yml`) keeps the
+built kernel in sync with upstream:
+
+- Runs every 3 hours (`0 */3 * * *` UTC) and on demand via
+  `workflow_dispatch`.
+- Fetches the `PKGBUILD` for each variant (`linux-cachyos`,
+  `linux-cachyos-bore`, `linux-cachyos-eevdf`, `linux-cachyos-lts`) from
+  `CachyOS/linux-cachyos@master` and extracts `pkgver`/`pkgrel`.
+- Compares against the last known versions stored in
+  `cachyos-kernel-state.json` in this repository.
+- When a variant has a new version, it dispatches the build workflow with:
+  - runner: `blacksmith-16vcpu-ubuntu-2404`
+  - matching `cpu_scheduler` for the variant (`cachyos`, `bore`, `eevdf`)
+  - QEMU smoke test enabled
+  - `publish_release: true`, so a GitHub Release is created/updated
+    automatically for every new kernel
+- After dispatching, it commits the new versions to `cachyos-kernel-state.json`.
+
+Notes:
+
+- On the very first run there is no stored state, so the check only records the
+  current upstream versions and does **not** dispatch a build. Re-run the check
+  with `force_build: true` (or run the build manually) to establish a baseline.
+- `force_build: true` dispatches a build for every variant, even if upstream is
+  unchanged. This is also the way to retry after a failed build, since a version
+  is only recorded as built once it has been dispatched.
+- Release tags are auto-generated as `cachyos-debian-<variant>-<pkgver>-<run>`,
+  and each new release is marked as the latest.
+- The scheduled workflow only runs on the default branch (`main`).
 
 ## Manual Usage
 
@@ -172,6 +210,10 @@ The workflow performs package validation before uploading artifacts:
 
 Artifacts are always uploaded to the workflow run.
 
+With automatic tracking enabled, every new upstream kernel version is built and
+published to a GitHub Release automatically (see
+[Automatic Update Tracking](#automatic-update-tracking)).
+
 To publish the generated `.deb` packages to GitHub Releases, run the workflow
 manually with `publish_release` enabled. You can either provide a `release_tag`
 or leave it blank and let the workflow generate one from the kernel variant,
@@ -218,6 +260,8 @@ bootloader if the custom kernel does not work on your hardware.
 
 ```text
 .github/workflows/build-cachyos-kernel.yml
+.github/workflows/check-cachyos-updates.yml
+cachyos-kernel-state.json
 README.md
 ```
 

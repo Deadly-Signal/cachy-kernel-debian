@@ -1,5 +1,6 @@
 {
-  "linux-cachyos": "7.2.0-1",
-  "linux-cachyos-bore": "7.2.0-1",
-  "linux-cachyos-eevdf": "7.2.0-1"
+  "linux-cachyos": "7.2.1-1",
+  "linux-cachyos-bore": "7.2.1-1",
+  "linux-cachyos-eevdf": "7.2.1-1",
+  "linux-cachyos-lts": "6.18.42-1"
 }

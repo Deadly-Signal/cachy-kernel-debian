@@ -235,9 +235,19 @@ jobs:
           cfg -e INET
           cfg -m TCP_CONG_BBR
           cfg -m NET_SCH_FQ
-          cfg -m NETFILTER
+          # NETFILTER and NETFILTER_ADVANCED are bool symbols (upstream: =y).
+          # They must be enabled with -e; using -m writes an invalid "=m"
+          # value which `make olddefconfig` then drops, silently disabling
+          # the entire firewall stack (iptables/nftables, ufw, etc.).
+          cfg -e NETFILTER
+          cfg -e NETFILTER_ADVANCED
           cfg -m NF_TABLES
+          cfg -m NF_CONNTRACK
+          cfg -m NETFILTER_XTABLES
+          cfg -m IP_NF_IPTABLES
+          cfg -m IP6_NF_IPTABLES
           cfg -m BRIDGE
+          cfg -m BRIDGE_NETFILTER
           cfg -m VLAN_8021Q
           cfg -m WIREGUARD
 
@@ -309,7 +319,9 @@ jobs:
             CONFIG_BINFMT_SCRIPT=y \
             CONFIG_PRINTK=y \
             CONFIG_SERIAL_8250=y \
-            CONFIG_SERIAL_8250_CONSOLE=y; do
+            CONFIG_SERIAL_8250_CONSOLE=y \
+            CONFIG_NETFILTER=y \
+            CONFIG_NETFILTER_ADVANCED=y; do
             grep -qx "${required_config}" .config
           done
 
@@ -356,6 +368,10 @@ jobs:
           test -n "$(find package-check/image/lib/modules -mindepth 1 -maxdepth 1 -type d -print -quit)"
           test -n "$(find package-check/image/lib/modules -type f \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.zst' -o -name 'modules.builtin' \) -print -quit)"
           test -n "$(find package-check/headers/usr/src -mindepth 1 -maxdepth 2 -type f -name Makefile -print -quit)"
+          # Firewall regression guard: ufw/iptables/nftables need netfilter
+          # modules packaged under net/netfilter. Fail early if the config
+          # pass silently disabled CONFIG_NETFILTER again.
+          test -n "$(find package-check/image/lib/modules -type f \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.zst' \) -path '*net/netfilter*' -print -quit)"
 
       - name: QEMU boot smoke test
         if: ${{ env.RUN_QEMU_SMOKE_TEST == 'true' }}

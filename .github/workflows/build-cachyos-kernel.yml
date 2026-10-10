@@ -141,7 +141,21 @@ jobs:
           export _preempt=full
           export _hugepage=madvise
 
+          # Upstream PKGBUILD is not written for `set -u`: it currently
+          # expands $XDG_DATA_HOME unguarded, and may reference other unset
+          # env vars in the future. Provide sane defaults and suspend nounset
+          # while sourcing so an upstream-only change can't fail the fetch step.
+          export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME:-/root}/.local/share}"
+          export CI="${CI:-false}"
+          export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-}"
+          set +u
           source PKGBUILD
+          set -u
+
+          : "${pkgbase:?PKGBUILD did not set pkgbase}"
+          : "${pkgver:?PKGBUILD did not set pkgver}"
+          : "${pkgrel:?PKGBUILD did not set pkgrel}"
+          : "${_srcname:?PKGBUILD did not set _srcname}"
 
           {
             echo "pkgbase=${pkgbase}"

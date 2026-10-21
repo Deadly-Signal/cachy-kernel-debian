@@ -1,5 +1,3 @@
 {
-  "linux-cachyos": "7.3.0-2",
-  "linux-cachyos-bore": "7.3.0-2",
-  "linux-cachyos-eevdf": "7.3.0-2"
+  "linux-cachyos-lts": "6.18.55-1"
 }
